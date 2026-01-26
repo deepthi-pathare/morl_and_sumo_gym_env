@@ -19,7 +19,6 @@ energy efficiency, and time efficiency in realistic traffic simulations.
 1.  Clone the repository:
 
 ``` bash
-git clone https://github.com/<your-username>/morl_and_sumo_gym_env.git
 cd morl_and_sumo_gym_env
 ```
 
@@ -48,3 +47,4 @@ Typical workflow:
       --num-timesteps 1000000 \
       --gamma 0.98 \
       --ref-point -101 -101 -101 \
+
