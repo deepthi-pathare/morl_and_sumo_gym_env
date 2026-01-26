@@ -6,7 +6,6 @@ import warnings
 import gymnasium as gym
 import math
 from gymnasium import spaces
-import pandas as pd
 
 #warnings.simplefilter('always', UserWarning)
 
@@ -589,8 +588,7 @@ class Highway(gym.Env):
             outside_road (float): Distance travelled by ego vehicle in this RL step.
         Returns:
             reward (float): Reward for the current environment step.
-        """  
-        print("TODO REMOVE")      
+        """    
         reward = 0
 
         if action == CHANGE_LANE_LEFT or action == CHANGE_LANE_RIGHT:

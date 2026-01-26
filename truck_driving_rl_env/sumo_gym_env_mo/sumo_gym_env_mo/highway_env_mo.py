@@ -4,7 +4,6 @@ from gymnasium import spaces
 from sumo_gym_env.envs.highway_env import Highway, CHANGE_LANE_LEFT, CHANGE_LANE_RIGHT
 import math
 import traci
-import wandb
 
 class Highway_MO(Highway):
     """
@@ -19,7 +18,7 @@ class Highway_MO(Highway):
     def __init__(self, sim_params, road_params, use_gui=True, env_label=None):
         super(Highway_MO, self).__init__(sim_params, road_params, use_gui, env_label)
         
-        self.reward_dim = 3 # Outside road/collision penalty, driver cost
+        self.reward_dim = 3
         self.reward_space = spaces.Box(
             low=np.array([-self.collision_penalty, -math.inf, -math.inf]),
             high=np.array([self.completion_reward, 0, 0]),
