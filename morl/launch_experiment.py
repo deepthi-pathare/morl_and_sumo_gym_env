@@ -1,0 +1,178 @@
+"""Launches an experiment on a given environment and algorithm.
+
+Many parameters can be given in the command line, see the help for more infos.
+
+Examples:
+    python benchmark/launch_experiment.py --algo pcn --env-id deep-sea-treasure-v0 --num-timesteps 1000000 --gamma 0.99 --ref-point 0 -25 --auto-tag True --wandb-entity openrlbenchmark --seed 0 --init-hyperparams "scaling_factor:np.array([1, 1, 1])"
+"""
+
+import argparse
+import os
+import subprocess
+from distutils.util import strtobool
+
+import mo_gymnasium as mo_gym
+import numpy as np
+import requests
+from gymnasium.wrappers import FlattenObservation, RecordVideo
+from mo_gymnasium.wrappers import MORecordEpisodeStatistics
+
+from morl_baselines.common.evaluation import seed_everything
+from morl_experiments import (
+    ALGOS,
+    ENVS_WITH_KNOWN_PARETO_FRONT,
+    StoreDict,
+)
+
+from make_vector_env import make_env
+
+import sumo_gym_env_mo
+import env_parameters as ps
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--algo", type=str, help="Name of the algorithm to run", choices=ALGOS.keys(), required=True, default="gpils_moppo")
+    parser.add_argument("--env-id", type=str, help="MO-Gymnasium id of the environment to run", required=True)
+    parser.add_argument("--num-timesteps", type=int, help="Number of timesteps to train for", required=True)
+    parser.add_argument("--gamma", type=float, help="Discount factor to apply to the environment and algorithm", required=True)
+    parser.add_argument(
+        "--ref-point", type=float, nargs="+", help="Reference point to use for the hypervolume calculation", required=True
+    )
+    parser.add_argument("--seed", type=int, help="Random seed to use", default=42)
+    parser.add_argument("--wandb-entity", type=str, help="Wandb entity to use", required=False)
+    parser.add_argument(
+        "--auto-tag",
+        type=lambda x: bool(strtobool(x)),
+        default=True,
+        nargs="?",
+        const=True,
+        help="if toggled, the runs will be tagged with git tags, commit, and pull request number if possible",
+    )
+    parser.add_argument(
+        "--record-video",
+        type=lambda x: bool(strtobool(x)),
+        default=False,
+        nargs="?",
+        const=True,
+        help="if toggled, the runs will be recorded with RecordVideo wrapper.",
+    )
+    parser.add_argument("--record-video-ep-freq", type=int, default=5, help="Record video frequency (in episodes).")
+    parser.add_argument(
+        "--init-hyperparams",
+        type=str,
+        nargs="+",
+        action=StoreDict,
+        help="Override hyperparameters to use for the initiation of the algorithm. Example: --init-hyperparams learning_rate:0.001 final_epsilon:0.1",
+        default={},
+    )
+
+    parser.add_argument(
+        "--train-hyperparams",
+        type=str,
+        nargs="+",
+        action=StoreDict,
+        help="Override hyperparameters to use for the train method algorithm. Example: --train-hyperparams num_eval_weights_for_front:10 timesteps_per_iter:10000",
+        default={},
+    )
+
+    return parser.parse_args()
+
+
+def autotag() -> str:
+    """This adds a tag to the wandb run marking the commit number, allows to versioning of experiments. From CleanRL's benchmark utility."""
+    wandb_tag = ""
+    print("autotag feature is enabled")
+    try:
+        git_tag = subprocess.check_output(["git", "describe", "--tags"]).decode("ascii").strip()
+        wandb_tag = f"{git_tag}"
+        print(f"identified git tag: {git_tag}")
+    except subprocess.CalledProcessError:
+        return wandb_tag
+
+    git_commit = subprocess.check_output(["git", "rev-parse", "--verify", "HEAD"]).decode("ascii").strip()
+    try:
+        # try finding the pull request number on github
+        prs = requests.get(
+            f"https://api.github.com/search/issues?q=repo:LucasAlegre/morl-baselines+is:pr+{git_commit}"  # noqa
+        )
+        if prs.status_code == 200:
+            prs = prs.json()
+            if len(prs["items"]) > 0:
+                pr = prs["items"][0]
+                pr_number = pr["number"]
+                wandb_tag += f",pr-{pr_number}"  # noqa
+        print(f"identified github pull request: {pr_number}")
+    except Exception as e:
+        print(e)
+
+    return wandb_tag
+
+def main():
+    args = parse_args()
+    print(args)
+
+    seed_everything(args.seed)
+
+    if args.auto_tag:
+        if "WANDB_TAGS" in os.environ:
+            raise ValueError(
+                "WANDB_TAGS is already set. Please unset it before running this script or run the script with --auto-tag False"
+            )
+        wandb_tag = autotag()
+        if len(wandb_tag) > 0:
+            os.environ["WANDB_TAGS"] = wandb_tag
+
+    if args.algo == "gpils_moppo":
+        # Create vectorized environments
+        env = mo_gym.wrappers.vector.MOSyncVectorEnv([make_env(args.env_id, seed=42, idx=1, gamma=args.gamma)])
+        if "sumo_highway_env" in args.env_id:
+            eval_env = mo_gym.make(args.env_id, sim_params=ps.sim_params, road_params=ps.road_params, use_gui=False, env_label = "eval")
+        else:
+            eval_env = mo_gym.make(args.env_id)
+    else:        
+        if "mario" in args.env_id:
+            env = mo_gym.make(args.env_id, death_as_penalty=True)
+            eval_env = mo_gym.make(args.env_id, death_as_penalty=True, render_mode="rgb_array" if args.record_video else None)
+            env = MORecordEpisodeStatistics(env, gamma=args.gamma)
+        else:
+            env = mo_gym.make(args.env_id)
+            eval_env = mo_gym.make(args.env_id, render_mode="rgb_array" if args.record_video else None)
+            env = MORecordEpisodeStatistics(env, gamma=args.gamma)
+        if args.record_video:
+            eval_env = RecordVideo(
+                eval_env,
+                video_folder=f"videos/{args.algo}-{args.env_id}",
+                episode_trigger=lambda ep: ep % args.record_video_ep_freq == 0,
+            )
+
+    print(f"Instantiating {args.algo} on {args.env_id}")
+
+    algo = ALGOS[args.algo](
+        env=env,
+        gamma=args.gamma,
+        log=True,
+        seed=args.seed,
+        wandb_entity=args.wandb_entity,
+        **args.init_hyperparams,
+    )
+
+    if args.env_id in ENVS_WITH_KNOWN_PARETO_FRONT:
+        known_pareto_front = eval_env.unwrapped.pareto_front(gamma=args.gamma)
+    else:
+        known_pareto_front = None
+
+    print(algo.get_config())
+    print("Training starts... Let's roll!")
+    algo.train(
+        total_timesteps=args.num_timesteps,
+        eval_env=eval_env,
+        ref_point=np.array(args.ref_point),
+        known_pareto_front=known_pareto_front,
+        **args.train_hyperparams,
+    )
+    algo.save(filename="trained_model")
+    if hasattr(eval_env, 'close'):
+        eval_env.close()
+
+if __name__ == "__main__":
+    main()
